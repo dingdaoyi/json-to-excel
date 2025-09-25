@@ -8,10 +8,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-)
-
-var (
-	downloadDir = "./downloads"
+	"sync"
+	"time"
 )
 
 const (
@@ -20,8 +18,11 @@ const (
 )
 
 type Config struct {
-	Host string
-	Port string
+	Host          string
+	Port          string
+	TempDir       string
+	ExpirationDur time.Duration // 文件过期时间
+	CleanupTick   time.Duration // 清理检查间隔
 }
 
 // JSONToExcelParam 定义 JSON 转 Excel 的请求参数。
@@ -33,15 +34,95 @@ type JSONToExcelParam struct {
 }
 
 type ExcelService struct {
-	Host string
-	Port string
+	Host          string
+	Port          string
+	TempDir       string               // 临时文件目录
+	excelFiles    map[string]time.Time // 文件名到过期时间的映射
+	mutex         sync.RWMutex         // 保护 ExcelFiles 的并发访问
+	cleanupTick   time.Duration        // 清理间隔
+	expirationDur time.Duration        // 文件过期时间
 }
 
-func NewExcelService(cfg Config) *ExcelService {
-	return &ExcelService{
-		Host: cfg.Host,
-		Port: cfg.Port,
+func NewExcelService(cfg Config) (*ExcelService, error) {
+	// 创建临时目录
+	if cfg.TempDir == "" {
+		cfg.TempDir = filepath.Join(os.TempDir(), "excel-tmp")
 	}
+	if err := os.MkdirAll(cfg.TempDir, 0755); err != nil {
+		return nil, fmt.Errorf("创建临时目录失败: %w", err)
+	}
+
+	s := &ExcelService{
+		Host:          cfg.Host,
+		Port:          cfg.Port,
+		TempDir:       cfg.TempDir,
+		excelFiles:    make(map[string]time.Time),
+		expirationDur: cfg.ExpirationDur,
+		cleanupTick:   cfg.CleanupTick,
+	}
+
+	// 启动清理任务
+	go s.startCleanupTask()
+
+	return s, nil
+}
+
+// 创建Excel文件并记录过期时间
+func (s *ExcelService) addCleanFile(filename string) {
+	s.mutex.Lock()
+	t := time.Now().Add(s.expirationDur)
+	log.Printf("添加文件时间 %s: %v", filename, t)
+	s.excelFiles[filename] = t
+	s.mutex.Unlock()
+
+}
+
+// 清理过期文件的定时任务
+func (s *ExcelService) startCleanupTask() {
+	ticker := time.NewTicker(s.cleanupTick)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.cleanupExpiredFiles()
+	}
+}
+
+// 清理过期文件
+func (s *ExcelService) cleanupExpiredFiles() {
+	now := time.Now()
+	log.Print("清理临时文件开始:\n")
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for filePath, expireTime := range s.excelFiles {
+		log.Printf("loginpath:%s,expireTime:%s", filePath, expireTime)
+		if now.After(expireTime) {
+			if err := os.Remove(filePath); err != nil {
+				log.Printf("删除过期文件失败 %s: %v", filePath, err)
+			} else {
+				log.Printf("已删除过期文件: %s", filePath)
+				delete(s.excelFiles, filePath)
+			}
+		}
+	}
+}
+
+// Shutdown 服务停止时清理所有文件
+func (s *ExcelService) Shutdown() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// 删除所有文件
+	for filePath := range s.excelFiles {
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("关闭时删除文件失败 %s: %v", filePath, err)
+		}
+	}
+
+	// 清空映射
+	s.excelFiles = make(map[string]time.Time)
+
+	// 删除临时目录
+	return os.RemoveAll(s.TempDir)
 }
 
 // validateParams 验证输入参数的有效性。
@@ -97,15 +178,16 @@ func (s *ExcelService) JsonToExcel(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	// 确保 downloads 目录存在
-	if err := os.MkdirAll(downloadDir, 0755); err != nil {
+	if err := os.MkdirAll(s.TempDir, 0755); err != nil {
 		return nil, nil, err
 	}
 
 	// 写入临时文件
-	tmpFile, err := os.CreateTemp(downloadDir, "result-*.xlsx")
+	tmpFile, err := os.CreateTemp(s.TempDir, "result-*.xlsx")
 	if err != nil {
 		return nil, nil, err
 	}
+	s.addCleanFile(tmpFile.Name())
 	defer tmpFile.Close()
 
 	if err := f.Write(tmpFile); err != nil {

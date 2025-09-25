@@ -6,16 +6,21 @@ import (
 	"net/http"
 )
 
-func McpHandler(host, port string) http.Handler {
+type MCPHandler struct {
+	handler http.Handler
+	svc     *internal.ExcelService
+}
+
+func NewMCPHandler(config internal.Config) *MCPHandler {
+	// 创建 Excel 服务
+	svc, _ := internal.NewExcelService(config)
 
 	// MCP Server
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "JsonToExcel",
+	mcpServer := mcp.NewServer(&mcp.Implementation{
+		Name:    "JsonToExcel",
 		Version: "1.0.0",
 	}, nil)
-	svc := internal.NewExcelService(internal.Config{
-		Host: host,
-		Port: port,
-	})
+
 	mcp.AddTool(mcpServer, &mcp.Tool{Name: "jsonToExcel",
 		Description: `将结构化的 JSON 数据转换为 Excel 文件（.xlsx），并返回下载链接。
 							适用于把 API 数据、表格类 JSON 转换为可下载的 Excel 格式。
@@ -38,5 +43,21 @@ func McpHandler(host, port string) http.Handler {
 	handler := mcp.NewStreamableHTTPHandler(func(request *http.Request) *mcp.Server {
 		return mcpServer
 	}, &mcp.StreamableHTTPOptions{})
-	return handler
+
+	return &MCPHandler{
+		handler: handler,
+		svc:     svc,
+	}
+}
+
+func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.handler.ServeHTTP(w, r)
+}
+
+// Close 提供关闭服务的方法
+func (h *MCPHandler) Close() error {
+	if h.svc != nil {
+		return h.svc.Shutdown()
+	}
+	return nil
 }

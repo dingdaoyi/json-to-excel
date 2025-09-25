@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"json-to-excel/config"
+	"json-to-excel/internal"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
@@ -40,8 +43,20 @@ func main() {
 	// 文件下载服务
 	e.Static("/downloads", downloadDir)
 	mux := http.NewServeMux()
-	handler := config.McpHandler(*host, *port)
-	loggingHandler := config.McpLoggingHandler(handler)
+	c := internal.Config{
+		TempDir:       downloadDir,
+		Port:          *port,
+		Host:          *host,
+		ExpirationDur: 2 * time.Minute,
+		CleanupTick:   30 * time.Second,
+	}
+	mcpHandler := config.NewMCPHandler(c)
+
+	// 设置信号处理
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	loggingHandler := config.McpLoggingHandler(mcpHandler)
 	mux.Handle("/mcp", loggingHandler)
 	mux.Handle("/", e)
 	srv := &http.Server{
@@ -53,9 +68,21 @@ func main() {
 	}
 
 	log.Printf("服务启动 %s", addr)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("服务启动失败: %v", err)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("服务启动失败: %v", err)
+		}
+	}()
+	// 等待中断信号
+	<-sigChan
+	log.Println("正在关闭服务...")
+
+	// 然后关闭 Excel 服务
+	if err := mcpHandler.Close(); err != nil {
+		log.Printf("Excel service Close: %v", err)
 	}
+
+	log.Println("服务已完全关闭")
 }
 
 // ErrorHandlerMiddleware 统一错误返回
@@ -77,7 +104,6 @@ func CORSMiddleware() gin.HandlerFunc {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
