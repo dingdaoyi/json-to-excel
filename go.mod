@@ -5,6 +5,7 @@ go 1.23.0
 require (
 	github.com/gin-gonic/gin v1.11.0
 	github.com/modelcontextprotocol/go-sdk v0.7.0
+	github.com/sirupsen/logrus v1.9.3
 	github.com/xuri/excelize/v2 v2.9.1
 )
 

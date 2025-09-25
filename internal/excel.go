@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/xuri/excelize/v2"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,6 +19,7 @@ const (
 type Config struct {
 	Host          string
 	Port          string
+	BaseURL       string // 外部访问基础URL
 	TempDir       string
 	ExpirationDur time.Duration // 文件过期时间
 	CleanupTick   time.Duration // 清理检查间隔
@@ -36,6 +36,7 @@ type JSONToExcelParam struct {
 type ExcelService struct {
 	Host          string
 	Port          string
+	BaseURL       string               // 外部访问基础URL
 	TempDir       string               // 临时文件目录
 	excelFiles    map[string]time.Time // 文件名到过期时间的映射
 	mutex         sync.RWMutex         // 保护 ExcelFiles 的并发访问
@@ -55,6 +56,7 @@ func NewExcelService(cfg Config) (*ExcelService, error) {
 	s := &ExcelService{
 		Host:          cfg.Host,
 		Port:          cfg.Port,
+		BaseURL:       cfg.BaseURL,
 		TempDir:       cfg.TempDir,
 		excelFiles:    make(map[string]time.Time),
 		expirationDur: cfg.ExpirationDur,
@@ -71,7 +73,7 @@ func NewExcelService(cfg Config) (*ExcelService, error) {
 func (s *ExcelService) addCleanFile(filename string) {
 	s.mutex.Lock()
 	t := time.Now().Add(s.expirationDur)
-	log.Printf("添加文件时间 %s: %v", filename, t)
+	Logger.WithField("file", filepath.Base(filename)).Debugf("添加文件过期时间: %v", t)
 	s.excelFiles[filename] = t
 	s.mutex.Unlock()
 
@@ -90,16 +92,15 @@ func (s *ExcelService) startCleanupTask() {
 // 清理过期文件
 func (s *ExcelService) cleanupExpiredFiles() {
 	now := time.Now()
-	log.Print("清理临时文件开始:\n")
+	Logger.Debug("开始清理过期文件")
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	for filePath, expireTime := range s.excelFiles {
-		log.Printf("loginpath:%s,expireTime:%s", filePath, expireTime)
 		if now.After(expireTime) {
 			if err := os.Remove(filePath); err != nil {
-				log.Printf("删除过期文件失败 %s: %v", filePath, err)
+				Logger.WithError(err).Errorf("删除过期文件失败: %s", filepath.Base(filePath))
 			} else {
-				log.Printf("已删除过期文件: %s", filePath)
+				Logger.WithField("file", filepath.Base(filePath)).Info("已删除过期文件")
 				delete(s.excelFiles, filePath)
 			}
 		}
@@ -114,7 +115,7 @@ func (s *ExcelService) Shutdown() error {
 	// 删除所有文件
 	for filePath := range s.excelFiles {
 		if err := os.Remove(filePath); err != nil {
-			log.Printf("关闭时删除文件失败 %s: %v", filePath, err)
+			Logger.WithError(err).Errorf("关闭时删除文件失败: %s", filepath.Base(filePath))
 		}
 	}
 
@@ -196,8 +197,13 @@ func (s *ExcelService) JsonToExcel(ctx context.Context, req *mcp.CallToolRequest
 
 	// 构造下载链接
 	fileName := filepath.Base(tmpFile.Name())
-	fileURL := fmt.Sprintf("http://%s:%s/downloads/%s", s.Host, s.Port, fileName)
-	log.Printf("请求生成excel:%s", fileURL)
+	var fileURL string
+	if s.BaseURL != "" {
+		fileURL = fmt.Sprintf("%s/downloads/%s", s.BaseURL, fileName)
+	} else {
+		fileURL = fmt.Sprintf("http://%s:%s/downloads/%s", s.Host, s.Port, fileName)
+	}
+	Logger.WithField("url", fileURL).Info("生成Excel文件")
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.ResourceLink{

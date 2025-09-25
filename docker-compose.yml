@@ -1,0 +1,17 @@
+services:
+  json-to-excel:
+    build: .
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      - TZ=Asia/Shanghai
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=8080
+      - BASE_URL=${BASE_URL:-http://localhost:8080}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - DOWNLOAD_DIR=/app/downloads
+      - FILE_EXPIRATION=${FILE_EXPIRATION:-2m}
+      - CLEANUP_INTERVAL=${CLEANUP_INTERVAL:-30s}
+    volumes:
+      - ./downloads:/app/downloads
+    restart: unless-stopped

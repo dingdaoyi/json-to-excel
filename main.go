@@ -7,7 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"json-to-excel/config"
 	"json-to-excel/internal"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,10 +15,34 @@ import (
 )
 
 var (
-	host        = flag.String("host", "localhost", "监听地址")
-	port        = flag.String("port", "8080", "监听端口")
-	downloadDir = "./downloads"
+	host        = flag.String("host", getEnvOrDefault("HOST", "localhost"), "监听地址")
+	port        = flag.String("port", getEnvOrDefault("PORT", "8080"), "监听端口")
+	baseURL     = flag.String("base-url", getEnvOrDefault("BASE_URL", ""), "外部访问基础URL")
+	downloadDir = getEnvOrDefault("DOWNLOAD_DIR", "./downloads")
 )
+
+// getEnvOrDefault 获取环境变量，如果不存在则返回默认值
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// getEnvDurationOrDefault 获取环境变量并转换为时间间隔
+func getEnvDurationOrDefault(key string, defaultValue time.Duration) time.Duration {
+	if value := os.Getenv(key); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			return duration
+		}
+		internal.Logger.WithFields(map[string]interface{}{
+			"key":     key,
+			"value":   value,
+			"default": defaultValue,
+		}).Warn("无法解析环境变量，使用默认值")
+	}
+	return defaultValue
+}
 
 func main() {
 	flag.Usage = func() {
@@ -47,8 +70,9 @@ func main() {
 		TempDir:       downloadDir,
 		Port:          *port,
 		Host:          *host,
-		ExpirationDur: 2 * time.Minute,
-		CleanupTick:   30 * time.Second,
+		BaseURL:       *baseURL,
+		ExpirationDur: getEnvDurationOrDefault("FILE_EXPIRATION", 2*time.Minute),
+		CleanupTick:   getEnvDurationOrDefault("CLEANUP_INTERVAL", 30*time.Second),
 	}
 	mcpHandler := config.NewMCPHandler(c)
 
@@ -67,22 +91,22 @@ func main() {
 		MaxHeaderBytes: 1 << 20,
 	}
 
-	log.Printf("服务启动 %s", addr)
+	internal.Logger.WithField("addr", addr).Info("服务启动")
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("服务启动失败: %v", err)
+			internal.Logger.WithError(err).Fatal("服务启动失败")
 		}
 	}()
 	// 等待中断信号
 	<-sigChan
-	log.Println("正在关闭服务...")
+	internal.Logger.Info("正在关闭服务...")
 
 	// 然后关闭 Excel 服务
 	if err := mcpHandler.Close(); err != nil {
-		log.Printf("Excel service Close: %v", err)
+		internal.Logger.WithError(err).Error("Excel service Close")
 	}
 
-	log.Println("服务已完全关闭")
+	internal.Logger.Info("服务已完全关闭")
 }
 
 // ErrorHandlerMiddleware 统一错误返回
