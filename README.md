@@ -82,3 +82,12 @@ source .env && ./json-to-excel
 -host: 服务地址（默认：localhost）
 
 注：环境变量优先级高于命令行参数
+
+#### 使用
+添加 Streamable HTTP  http://localhost:8080/mcp
+
+```shell
+npx @modelcontextprotocol/inspector
+```
+
+![img.png](doc/image/Inspector.png)
